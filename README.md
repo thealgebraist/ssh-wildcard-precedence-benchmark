@@ -4,6 +4,41 @@ A minimal, reproducible benchmark fixture demonstrating **Type III Configuration
 
 ---
 
+## Quick Retest with Codex, Gemini-CLI, or Claude Code
+
+Anyone can clone and retest this benchmark—or evaluate another coding agent against a live 4-VM QEMU cluster—with a single prompt or command:
+
+### Option A: One-Prompt Retest Inside Any Coding Agent CLI
+Point `codex`, `gemini`, `claude`, or `agy` at this repository and ask:
+> *"Retest the problem described in repo `https://github.com/thealgebraist/ssh-wildcard-precedence-benchmark`"*
+
+Agent entrypoints ([`AGENTS.md`](AGENTS.md), [`GEMINI.md`](GEMINI.md), [`CLAUDE.md`](CLAUDE.md)) automatically direct the tool to run [`./retest.sh`](retest.sh).
+
+### Option B: Benchmark an Agent in a Spoiler-Free Sandbox Workspace
+Because this repo documents the root cause, use [`setup_blind_workspace.sh`](setup_blind_workspace.sh) / [`retest.sh`](retest.sh) to spawn an isolated workspace (`/tmp/ssh-wildcard-blind`) connected to a live 4-VM QEMU cluster (`wc-client -> server1 -> server3 -> server2`) over a sandbox-safe file relay (`.bridge/` — works even inside `codex -s workspace-write` without network or Docker access):
+
+```bash
+# Automated blind evaluation comparing an AI agent vs C99 preflight:
+./retest.sh --run-agent codex     # or: gemini, claude
+
+# Optional model override:
+AGENT_MODEL=o3 ./retest.sh --run-agent codex
+
+# Or prepare the blind workspace manually for interactive CLI runs:
+./retest.sh --prepare-blind /tmp/ssh-wildcard-blind
+cat /tmp/ssh-wildcard-blind/PROMPT.txt
+# Run your CLI tool inside /tmp/ssh-wildcard-blind, then clean up:
+./retest.sh --teardown /tmp/ssh-wildcard-blind
+```
+
+### Option C: Full Automated Verification (No Agent Calls)
+```bash
+./retest.sh
+```
+Runs `reproduce.sh` (`ssh -G` + C99 preflight) and, on Linux hosts with `qemu-system-x86_64`, runs the blind-workspace + 4-VM QEMU cluster E2E check.
+
+---
+
 ## 1. Problem Description
 
 OpenSSH parses `ssh_config(5)` with a strict **first-match-wins** evaluation rule:
