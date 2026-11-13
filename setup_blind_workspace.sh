@@ -202,7 +202,11 @@ nohup bash -c '
             cp "${WS_DIR}/client/.ssh/config" "${REPO_DIR}/qemu/client/.ssh/config" 2>/dev/null || true
             chmod 644 "${REPO_DIR}/qemu/client/.ssh/config" 2>/dev/null || true
             set +e
-            "${REPO_DIR}/qemu/test_connection.sh" > "${BRIDGE_DIR}/out.${req_id}.tmp" 2>&1
+            if command -v timeout >/dev/null 2>&1; then
+                timeout -k 2 16 "${REPO_DIR}/qemu/test_connection.sh" > "${BRIDGE_DIR}/out.${req_id}.tmp" 2>&1
+            else
+                "${REPO_DIR}/qemu/test_connection.sh" > "${BRIDGE_DIR}/out.${req_id}.tmp" 2>&1
+            fi
             rc=$?
             set -e
             mv "${BRIDGE_DIR}/out.${req_id}.tmp" "${BRIDGE_DIR}/out.${req_id}"

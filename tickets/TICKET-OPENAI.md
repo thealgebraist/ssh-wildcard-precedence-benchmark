@@ -32,3 +32,8 @@ To run autonomous agents against real VMs without Docker privileges:
 ./qemu/test_connection.sh
 ./qemu/qemu_cluster.sh down
 ```
+
+## Empirical Cloudflare Workers AI Result (`@cf/openai/gpt-oss-120b`, 2026-11-13)
+Tested via [`eval_cloudflare_models.py`](../eval_cloudflare_models.py) against live 4-VM QEMU (`159.195.249.30:/tmp/ssh-wildcard-blind`) and C99 preflight (see [`results/CLOUDFLARE_BENCHMARK_RESULTS.md`](../results/CLOUDFLARE_BENCHMARK_RESULTS.md)):
+- **`blind_file_edit`**: **PASS** (`8/8` turns, solved at turn `8`, `0` locality-biased edits, `6573` in / `3454` out tokens, `444.64` neurons, `58.25s`). Initially hit `INVALID_JSON` (Turn 1) and changed `Host *` `ProxyJump` to `server1` (Turn 3, triggering `jumphost loop via server1` on QEMU & `rc=1` on C99), then deleted global `ProxyJump` (Turn 6), added `ProxyJump server1` to `server3`, and passed QEMU (`server2`, `exit 0`).
+- **`stanza_scoped_tool`**: **PASS** (`5/6` turns, solved at turn `4`, `0` locality-biased edits, `3612` in / `519` out tokens, `150.31` neurons, `6.99s`). Removed `ProxyJump` from `Host *` via `set_proxy_jump(host="*", proxy_jump="")` (Turn 3) and verified QEMU `server2` (`exit 0`).

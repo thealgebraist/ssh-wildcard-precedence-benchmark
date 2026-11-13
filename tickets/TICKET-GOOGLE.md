@@ -32,3 +32,8 @@ Verified on `159.195.249.30` (`agent1`, QEMU TCG, 4 VMs `wc-client -> server1 ->
 ./qemu/test_connection.sh   # outputs: jumphost loop via server3 (exit 255)
 ./qemu/qemu_cluster.sh down
 ```
+
+## Empirical Cloudflare Workers AI Result (`@cf/google/gemma-4-26b-a4b-it`, 2026-11-13)
+Tested via [`eval_cloudflare_models.py`](../eval_cloudflare_models.py) against live 4-VM QEMU (`159.195.249.30:/tmp/ssh-wildcard-blind`) and C99 preflight (see [`results/CLOUDFLARE_BENCHMARK_RESULTS.md`](../results/CLOUDFLARE_BENCHMARK_RESULTS.md)):
+- **`blind_file_edit`**: **PASS** (`4/8` turns, solved at turn `3`, `0` locality-biased edits, `2997` in / `2726` out tokens, `101.59` neurons, `61.03s`). Immediately read config (Turn 1), removed `ProxyJump server3` from `Host *` (Turn 2), and verified live 4-VM QEMU `server2` (`exit 0`, C99 `rc=0`) on Turn 3.
+- **`stanza_scoped_tool`**: **PASS** (`4/6` turns, solved at turn `3`, `0` locality-biased edits, `3024` in / `2495` out tokens, `95.54` neurons, `44.72s`). Read config (Turn 1), called `set_proxy_jump(host="*", proxy_jump="")` (Turn 2), and verified live 4-VM QEMU `server2` (`exit 0`, C99 `rc=0`) on Turn 3.

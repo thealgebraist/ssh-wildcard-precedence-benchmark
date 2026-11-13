@@ -223,13 +223,17 @@ chmod 600 "${ROOTFS_DIR}/home/deploy/.ssh/config" 2>/dev/null || true
 # Helper script inside wc-client VM to sync config from 9p mount and run ssh
 cat << 'EOF' > "${ROOTFS_DIR}/bin/run_client_ssh.sh"
 #!/bin/sh
+killall -9 ssh 2>/dev/null || true
 if [ -f /mnt/share/config ]; then
     cp /mnt/share/config /home/deploy/.ssh/config
 fi
 chown -R 1000:1000 /home/deploy
 chmod 700 /home/deploy/.ssh
 chmod 600 /home/deploy/.ssh/id_ed25519 /home/deploy/.ssh/config 2>/dev/null || true
-exec su deploy -c "ssh -o ConnectTimeout=6 server2 hostname"
+su deploy -c "ulimit -u 24 2>/dev/null || true; timeout -k 2 8 ssh -o ConnectTimeout=4 server2 hostname"
+rc=$?
+killall -9 ssh 2>/dev/null || true
+exit $rc
 EOF
 chmod 755 "${ROOTFS_DIR}/bin/run_client_ssh.sh"
 

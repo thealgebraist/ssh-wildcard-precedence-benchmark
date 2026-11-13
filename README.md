@@ -131,10 +131,42 @@ Prerequisites on Debian/Ubuntu: `qemu-system-x86`, `busybox-static`, `openssh-se
 
 ---
 
-## 5. Benchmark Evaluation & Tickets
+## 5. Cloudflare Workers AI 4-Model Empirical Evaluation vs. C99 Preflight (`eval_cloudflare_models.py`)
+
+Evaluated [`eval_cloudflare_models.py`](eval_cloudflare_models.py) via `cf ai run` across 4 Cloudflare Workers AI models on both spoiler-free blind regimes (`blind_file_edit` and `stanza_scoped_tool`), backed by the live 4-VM QEMU cluster (`159.195.249.30:/tmp/ssh-wildcard-blind`) and [`check_client_precedence.c`](check_client_precedence.c) (full traces in [`results/CLOUDFLARE_BENCHMARK_RESULTS.md`](results/CLOUDFLARE_BENCHMARK_RESULTS.md) and [`results/cloudflare_4models_results.json`](results/cloudflare_4models_results.json)):
+
+### Re-Running with Your Cloudflare Credentials
+```bash
+export CLOUDFLARE_ACCOUNT_ID="<your-account-id>"
+export CLOUDFLARE_API_TOKEN="<your-api-token>"
+export QEMU_SSH_PASSWORD="<ssh-pass-if-needed>"
+python3 eval_cloudflare_models.py --qemu-ssh agent1@<linux-host> --qemu-ws /tmp/ssh-wildcard-blind --ssh-password-env QEMU_SSH_PASSWORD
+```
+
+### Empirical Results (2026-11-13T21:20:10Z)
+
+| Model / Verifier | Mode | Result (QEMU + C99) | Turns Used | Solved At Turn | Locality-Biased Edits | Tokens (In / Out) | Neurons | Total Time |
+| :--- | :--- | :--- | ---: | ---: | ---: | :--- | ---: | ---: |
+| `check_client_precedence` (C99) | Static Preflight (100 runs) | **PASS** (100% accurate) | — | Deterministic | 0 | 0 / 0 | 0 | **2.41–2.44 ms** (median) |
+| `@cf/google/gemma-4-26b-a4b-it` | `blind_file_edit` | **PASS** | 4/8 | 3 | 0 | 2997 / 2726 | 101.59 | 61.03s |
+| `@cf/google/gemma-4-26b-a4b-it` | `stanza_scoped_tool` | **PASS** | 4/6 | 3 | 0 | 3024 / 2495 | 95.54 | 44.72s |
+| `@cf/openai/gpt-oss-120b` | `blind_file_edit` | **PASS** | 8/8 | 8 | 0 | 6573 / 3454 | 444.64 | 58.25s |
+| `@cf/openai/gpt-oss-120b` | `stanza_scoped_tool` | **PASS** | 5/6 | 4 | 0 | 3612 / 519 | 150.31 | 6.99s |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `blind_file_edit` | **PASS** | 8/8 | 7 | 0 | 6762 / 136 | 208.18 | 9.45s |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `stanza_scoped_tool` | **PASS** | 4/6 | 3 | 0 | 2774 / 75 | 89.34 | 4.51s |
+| `@cf/qwen/qwen2.5-coder-32b-instruct` | `blind_file_edit` | **FAIL** (`fork failed`) | 8/8 | — | 0 | 6509 / 138 | 403.09 | 8.33s |
+| `@cf/qwen/qwen2.5-coder-32b-instruct` | `stanza_scoped_tool` | **FAIL** (`jumphost loop via server3`) | 6/6 | — | 1 | 4478 / 94 | 277.23 | 5.65s |
+
+### Key Empirical Findings
+- **3 of 4 Cloudflare models solved both modes** (`gemma-4-26b-a4b-it`, `gpt-oss-120b`, and `llama-3.3-70b-instruct-fp8-fast`) once real OpenSSH error feedback (`jumphost loop via server3` / `server1`) was returned from live QEMU VMs.
+- **`@cf/qwen/qwen2.5-coder-32b-instruct` failed both modes**: in `stanza_scoped_tool`, it fell straight into **Stanza Locality Bias** (`set_proxy_jump` on `server2` -> `server1`, then `server3` -> `""` -> `server1`), leaving `Host *` untouched (`C99 exit 1`, `QEMU jumphost loop via server3`); in `blind_file_edit`, it swapped `ProxyJump` inside `Host *` to recursive `ProxyCommand ssh -W %h:%p server1/server3`, triggering `fork failed: Resource temporarily unavailable` in `wc-client` (which also bypassed C99 `ProxyJump`-only checking, highlighting why live QEMU execution complements static preflight checks).
+
+---
+
+## 6. Benchmark Evaluation & Tickets
 
 This repository contains tracking tickets for testing autonomous models:
-- [Issue #1 / `tickets/TICKET-OPENAI.md`](tickets/TICKET-OPENAI.md): OpenAI Model Evaluation (GPT-4o, o1, o3, Luna)
-- [Issue #2 / `tickets/TICKET-GOOGLE.md`](tickets/TICKET-GOOGLE.md): Google Gemini Evaluation (Gemini 1.5 Pro, 2.0 Flash, Argon)
-- [Issue #3 / `tickets/TICKET-ANTHROPIC-OPENSOURCE.md`](tickets/TICKET-ANTHROPIC-OPENSOURCE.md): Anthropic & Open Source Evaluation (Claude 3.5 Sonnet, DeepSeek V3/R1, Qwen 2.5 Coder)
+- [Issue #1 / `tickets/TICKET-OPENAI.md`](tickets/TICKET-OPENAI.md): OpenAI Model Evaluation (`@cf/openai/gpt-oss-120b` tested, GPT-4o, o1, o3, Luna)
+- [Issue #2 / `tickets/TICKET-GOOGLE.md`](tickets/TICKET-GOOGLE.md): Google Gemini/Gemma Evaluation (`@cf/google/gemma-4-26b-a4b-it` tested, Gemini 1.5 Pro, 2.0 Flash, Argon)
+- [Issue #3 / `tickets/TICKET-ANTHROPIC-OPENSOURCE.md`](tickets/TICKET-ANTHROPIC-OPENSOURCE.md): Anthropic & Open Source Evaluation (`@cf/qwen/qwen2.5-coder-32b-instruct` & `@cf/meta/llama-3.3-70b-instruct-fp8-fast` tested, Claude, DeepSeek)
 - [Issue #4 / `tickets/TICKET-C99-PREFLIGHT.md`](tickets/TICKET-C99-PREFLIGHT.md): Deterministic C99 Preflight Checker vs Stochastic LLMs
