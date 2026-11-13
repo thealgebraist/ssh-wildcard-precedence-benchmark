@@ -22,3 +22,13 @@ In empirical evaluations with `gemini-4-argon`, the model queried `inspect_clien
 4. Output comparison:
    - Did the model identify the `first-match-wins` rule of OpenSSH?
    - Did the model edit line 1 (`Host *`) or line 10 (`Host server2`)?
+
+## QEMU Live Multi-VM Test Harness
+Verified on `159.195.249.30` (`agent1`, QEMU TCG, 4 VMs `wc-client -> server1 -> server3 -> server2`):
+```bash
+./qemu/build_initramfs.sh
+./qemu/qemu_cluster.sh reset && ./qemu/qemu_cluster.sh up
+# Verify failure:
+./qemu/test_connection.sh   # outputs: jumphost loop via server3 (exit 255)
+./qemu/qemu_cluster.sh down
+```

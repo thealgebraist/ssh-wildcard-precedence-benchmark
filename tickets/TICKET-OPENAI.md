@@ -21,3 +21,14 @@ In previous trials, `gpt-6-luna` exhibited a 100% failure rate over 16 turns by 
    - Turns to resolution
    - Token expenditure
    - Presence of Stanza Locality Bias
+
+## QEMU Live Multi-VM Test Harness
+To run autonomous agents against real VMs without Docker privileges:
+```bash
+./qemu/build_initramfs.sh
+./qemu/qemu_cluster.sh reset
+./qemu/qemu_cluster.sh up
+# Agent inspects/edits qemu/client/.ssh/config and verifies with:
+./qemu/test_connection.sh
+./qemu/qemu_cluster.sh down
+```

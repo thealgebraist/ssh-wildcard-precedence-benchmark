@@ -18,3 +18,10 @@
 
 ## Validation Goal
 Demonstrate that integrating deterministic C99 static analyzers as preflight filters in agent loops completely eliminates the 16-turn exponential Markov drift.
+
+## Remote QEMU 4-VM E2E Verification (`159.195.249.30`, `agent1`)
+Executed via `./qemu/run_qemu_e2e_test.sh` (unprivileged QEMU TCG software emulation on Debian `6.12.111+deb13-amd64`):
+- **Preflight Buggy Config**: Exited `1` (`[PREFLIGHT VIOLATION 1] Directive 'ProxyJump' for host 'server2' is completely SHADOWED by earlier 'Host *' at line 10 (val: 'server3')`).
+- **Live 4-VM QEMU Cluster (Buggy)**: Exited `255` (`jumphost loop via server3`).
+- **Preflight Fixed Config**: Exited `0` (`[PREFLIGHT OK]`).
+- **Live 4-VM QEMU Cluster (Fixed)**: Exited `0` (`server2` over `wc-client -> server1 -> server3 -> server2`).

@@ -72,7 +72,31 @@ Run checker against fixed config:
 
 ---
 
-## 4. Benchmark Evaluation & Tickets
+## 4. Full 4-VM QEMU Cluster Test Suite (Unprivileged, No-KVM TCG Compatible)
+
+The `qemu/` directory provides an unprivileged, rootless 4-VM QEMU topology (`wc-client -> server1 -> server3 -> server2`) using real OpenSSH (`sshd` / `ssh`), `busybox`, and the host Linux kernel + virtio/9p drivers:
+
+- [`qemu/build_initramfs.sh`](qemu/build_initramfs.sh): Builds a minimal `initramfs.cpio.gz` (`9.2M`) bundling OpenSSH binaries, BusyBox, NSS libraries, and `virtio_net`/`virtio-rng`/`9p` modules.
+- [`qemu/qemu_cluster.sh`](qemu/qemu_cluster.sh): Boots or tears down all 4 QEMU VMs (`up`, `down`, `reset`, `status`) interconnected via point-to-point `-netdev socket` Ethernet links, with a `-virtfs` 9p hostshare mounting `qemu/client/.ssh` into `wc-client`. Uses KVM if available or falls back to `-accel tcg -cpu max`.
+- [`qemu/test_connection.sh`](qemu/test_connection.sh): Executes `ssh -o ConnectTimeout=6 server2 hostname` inside `wc-client` via its management SSH port (`17100`).
+- [`qemu/run_qemu_e2e_test.sh`](qemu/run_qemu_e2e_test.sh): Runs all 5 end-to-end verification stages (boot buggy cluster, observe `jumphost loop via server3`, catch violation via C99 preflight, apply minimal fix, verify preflight OK, confirm 4-hop `ssh server2 hostname` returns `server2`).
+
+### Running the QEMU E2E Test (Linux Host)
+Prerequisites on Debian/Ubuntu: `qemu-system-x86`, `busybox-static`, `openssh-server`, `openssh-client`, `gcc` or `clang`, readable `/boot/vmlinuz-$(uname -r)` and `/lib/modules/$(uname -r)`.
+
+```bash
+./qemu/run_qemu_e2e_test.sh
+```
+
+### Verified Run on `v2202609375901513183.ultrasrv.de` (`159.195.249.30`, unprivileged `agent1`, TCG mode, kernel `6.12.111+deb13-amd64`)
+- **Step 1 (Buggy 4-VM cluster)**: `test_connection.sh` exited `255` with `jumphost loop via server3`.
+- **Step 2 (C99 Preflight on buggy config)**: `check_client_precedence` exited `1` with `[PREFLIGHT VIOLATION 1] Directive 'ProxyJump' for host 'server2' is completely SHADOWED by earlier 'Host *' at line 10 (val: 'server3')`.
+- **Step 3 & 4 (Minimal fix & C99 Preflight)**: Removing `ProxyJump server3` from `Host *` yields `[PREFLIGHT OK]` (`exit 0`).
+- **Step 5 (Fixed 4-VM cluster)**: `test_connection.sh` traversed `wc-client -> server1 -> server3 -> server2` and printed `server2` (`exit 0`).
+
+---
+
+## 5. Benchmark Evaluation & Tickets
 
 This repository contains tracking tickets for testing autonomous models:
 - [Issue #1 / `tickets/TICKET-OPENAI.md`](tickets/TICKET-OPENAI.md): OpenAI Model Evaluation (GPT-4o, o1, o3, Luna)

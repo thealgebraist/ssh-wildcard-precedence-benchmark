@@ -1,1 +1,3 @@
 check_client_precedence
+qemu/runtime/
+qemu/client/
