@@ -26,13 +26,13 @@ Executed via `./qemu/run_qemu_e2e_test.sh` (unprivileged QEMU TCG software emula
 - **Preflight Fixed Config**: Exited `0` (`[PREFLIGHT OK]`).
 - **Live 4-VM QEMU Cluster (Fixed)**: Exited `0` (`server2` over `wc-client -> server1 -> server3 -> server2`).
 
-## 100-Iteration C99 Timing vs. 4 Cloudflare Workers AI Models (2026-11-13)
+## 100-Iteration C99 Timing vs. 4 Cloudflare Workers AI Models (Hardened 5-Layer Instance 12, 2026-11-13)
 Measured alongside [`eval_cloudflare_models.py`](../eval_cloudflare_models.py) (`results/CLOUDFLARE_BENCHMARK_RESULTS.md`):
 - **C99 `check_client_precedence`** (100 iterations):
-  - `ssh_config.buggy` -> exit `1`, **100% accurate**, min `2.137 ms`, median `2.440 ms`, p95 `3.023 ms`, zero tokens.
-  - `ssh_config.fixed` -> exit `0`, **100% accurate**, min `2.131 ms`, median `2.409 ms`, p95 `3.067 ms`, zero tokens.
-- **4 Cloudflare Workers AI Models (`cf ai run` + live QEMU)**:
-  - `@cf/google/gemma-4-26b-a4b-it`: PASS/PASS (`4/8` & `4/6` turns, `61.03s` / `44.72s`, `101.59` / `95.54` neurons).
-  - `@cf/openai/gpt-oss-120b`: PASS/PASS (`8/8` & `5/6` turns, `58.25s` / `6.99s`, `444.64` / `150.31` neurons).
-  - `@cf/meta/llama-3.3-70b-instruct-fp8-fast`: PASS/PASS (`8/8` & `4/6` turns, `9.45s` / `4.51s`, `208.18` / `89.34` neurons).
-  - `@cf/qwen/qwen2.5-coder-32b-instruct`: FAIL/FAIL (`8/8` & `6/6` turns, `8.33s` / `5.65s`, `403.09` / `277.23` neurons; exhibited Stanza Locality Bias in `stanza_scoped_tool` and introduced recursive `ProxyCommand` fork failure in `blind_file_edit` — demonstrating that deterministic C99 `ProxyJump` checking + live QEMU OpenSSH execution catch complementary failure modes).
+  - `ssh_config.buggy` -> exit `1` (14 violations caught across `User`, `Port`, `ProxyJump`, and multi-hop chain), **100% accurate**, min `2.133 ms`, median `2.448 ms`, p95 `2.759 ms`, zero tokens.
+  - `ssh_config.fixed` -> exit `0`, **100% accurate**, min `2.141 ms`, median `2.441 ms`, p95 `2.790 ms`, zero tokens.
+- **4 Cloudflare Workers AI Models (`cf ai run` + live QEMU — 0/8 trials passed = 100% model failure rate)**:
+  - `@cf/openai/gpt-oss-120b`: **FAIL / FAIL** (`8/8` & `6/6` turns, `113.89s` / `56.93s`, `691.91` / `388.58` neurons; `jumphost loop via server1` / `stdio forwarding failed`).
+  - `@cf/google/gemma-4-26b-a4b-it`: **FAIL / FAIL** (`8/8` & `6/6` turns, `9.68s` / `33.36s`, `120.05` / `74.15` neurons; `jumphost loop via server3`).
+  - `@cf/qwen/qwen2.5-coder-32b-instruct`: **FAIL / FAIL** (`8/8` & `6/6` turns, `10.85s` / `5.95s`, `624.01` / `378.51` neurons; 5 locality-biased edits, `jumphost loop via server3`).
+  - `@cf/meta/llama-3.3-70b-instruct-fp8-fast`: **FAIL / FAIL** (`8/8` & `6/6` turns, `26.10s` / `19.41s`, `258.32` / `175.82` neurons; `stdio forwarding failed` / `Connection timed out`).

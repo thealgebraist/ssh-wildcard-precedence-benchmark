@@ -44,18 +44,17 @@ Runs `reproduce.sh` (`ssh -G` + C99 preflight) and, on Linux hosts with `qemu-sy
 OpenSSH parses `ssh_config(5)` with a strict **first-match-wins** evaluation rule:
 > *"For each parameter, the first obtained value will be used."*
 
-When a wildcard stanza `Host *` appears before host-specific stanzas (e.g., `Host server2`) and declares a routing directive like `ProxyJump server3`:
-1. Any connection to `server2` matches `Host *` first.
-2. OpenSSH sets `ProxyJump = server3` and permanently locks the parameter.
-3. The subsequent `Host server2` stanza with `ProxyJump server1` is discarded by the OpenSSH parser.
-4. If `server3` itself jumps through `server1` or `server2`, this creates a cyclic jump loop (`jumphost loop via server3`).
+In the hardened Instance 12 configuration ([`ssh_config.buggy`](ssh_config.buggy), 58 lines), five overlapping precedence layers and a decoy bastion stanza interact before the per-host stanzas (`Host server1`, `Host server3`, `Host server2`):
+1. **`Host bastion-gateway`**: Decoy stanza pointing at `10.202.1.3` (`server1`'s IP), tempting agents to route `server2` directly through `bastion-gateway` (bypassing `server3`, which fails with `stdio forwarding failed` because `server2` at `10.202.32.2` is isolated on `server3`'s second subnet).
+2. **`Host !server1 server*`**: Negated wildcard pattern matching `server3` and `server2` (but not `server1`), locking `ProxyJump server3` and causing `jumphost loop via server3`.
+3. **`Host *.compute.internal server?`**: Single-character glob `server?` matching `server1`, `server2`, and `server3`, locking `ProxyJump server1:2222` (causing `jumphost loop via server1` on the ingress jump host) and `User root` (shadowing `User deploy` on all three servers, causing `Permission denied (publickey)`).
+4. **`Host *1 *2`**: Suffix wildcard matching `server1` and `server2`, locking `ProxyJump server2:2222` (causing `jumphost loop via server2`) and `Port 2222` (shadowing `Port 22` on `server1` and `server2`, causing `Connection refused`).
+5. **`Host server2` Local Routing Defect**: Specifies `ProxyJump server1` at line 58 instead of `ProxyJump server3` (so even after all wildcard overrides are removed, `server2` still fails with `stdio forwarding failed` until updated to `ProxyJump server3`).
 
 ### The Autonomous Agent Cognitive Trap
 When LLM agents encounter `jumphost loop via server3`:
-- They search for the `Host server2` stanza.
-- They assume directives for `server2` are scoped locally inside that block.
-- They repeatedly invoke repair tools to set `ProxyJump server1` under `Host server2`.
-- Since OpenSSH ignores the later block, the edit has zero operational effect, leading to 100% failure rate over multi-turn diagnosis.
+- **Stanza Locality Bias**: Agents edit `Host server2` or `Host server3` at the bottom of the file, or call `set_proxy_jump` on `server2`, which has zero operational effect while earlier wildcard stanzas remain active.
+- **Partial Unpeeling & Decoy Routing**: Even models that recognize `Host !server1 server*` or `Host *1 *2` get trapped by `server?` (`User root` / `ProxyJump server1:2222`), `Port 2222`, or route through the decoy `bastion-gateway` (`stdio forwarding failed`), resulting in a **100% failure rate (8/8 trials)** across all 4 tested Cloudflare Workers AI models.
 
 ---
 
@@ -77,8 +76,10 @@ When LLM agents encounter `jumphost loop via server3`:
 ssh -F ssh_config.buggy -G server2 | grep '^proxyjump '
 # Output: proxyjump server3
 
-# Observe resolved ProxyJump after fix:
+# Observe resolved ProxyJump after fix (wc-client -> server1 -> server3 -> server2):
 ssh -F ssh_config.fixed -G server2 | grep '^proxyjump '
+# Output: proxyjump server3
+ssh -F ssh_config.fixed -G server3 | grep '^proxyjump '
 # Output: proxyjump server1
 ```
 
@@ -86,7 +87,7 @@ ssh -F ssh_config.fixed -G server2 | grep '^proxyjump '
 
 ## 3. C99 Deterministic Preflight Checker
 
-Compile the standalone C99 checker:
+Compile the standalone C99 checker (implements full OpenSSH `Host` pattern list matching including `*`, `?`, and `!negation`, plus multi-hop `ProxyJump`, `Port`, `User`, and `ProxyCommand` shadowing detection):
 ```bash
 clang -std=c99 -Wall -Wextra check_client_precedence.c -o check_client_precedence
 ```
@@ -94,14 +95,14 @@ clang -std=c99 -Wall -Wextra check_client_precedence.c -o check_client_precedenc
 Run checker against buggy config:
 ```bash
 ./check_client_precedence ssh_config.buggy server2 ProxyJump
-# Output: [PREFLIGHT VIOLATION 1] Directive 'ProxyJump' for host 'server2' is completely SHADOWED by earlier 'Host *' at line 7 (val: 'server3')
+# Output: [PREFLIGHT VIOLATION 1] Directive 'User' for host 'server1' (line 45, val: 'deploy') is completely SHADOWED by earlier 'Host *.compute.internal server?' at line 31 (val: 'root') (+13 more violations)
 # Exit code: 1
 ```
 
 Run checker against fixed config:
 ```bash
 ./check_client_precedence ssh_config.fixed server2 ProxyJump
-# Output: [PREFLIGHT OK] Directive 'ProxyJump' for host 'server2' has valid evaluation precedence.
+# Output: [PREFLIGHT OK] Directive 'ProxyJump' and multi-hop chain (server1 -> server3 -> server2) for 'server2' have valid evaluation precedence.
 # Exit code: 0
 ```
 
@@ -143,24 +144,27 @@ export QEMU_SSH_PASSWORD="<ssh-pass-if-needed>"
 python3 eval_cloudflare_models.py --qemu-ssh agent1@<linux-host> --qemu-ws /tmp/ssh-wildcard-blind --ssh-password-env QEMU_SSH_PASSWORD
 ```
 
-### Empirical Results (2026-11-13T21:20:10Z)
+### Empirical Results on Hardened 5-Layer Benchmark (2026-11-13T22:13:51Z)
 
 | Model / Verifier | Mode | Result (QEMU + C99) | Turns Used | Solved At Turn | Locality-Biased Edits | Tokens (In / Out) | Neurons | Total Time |
-| :--- | :--- | :--- | ---: | ---: | ---: | :--- | ---: | ---: |
-| `check_client_precedence` (C99) | Static Preflight (100 runs) | **PASS** (100% accurate) | — | Deterministic | 0 | 0 / 0 | 0 | **2.41–2.44 ms** (median) |
-| `@cf/google/gemma-4-26b-a4b-it` | `blind_file_edit` | **PASS** | 4/8 | 3 | 0 | 2997 / 2726 | 101.59 | 61.03s |
-| `@cf/google/gemma-4-26b-a4b-it` | `stanza_scoped_tool` | **PASS** | 4/6 | 3 | 0 | 3024 / 2495 | 95.54 | 44.72s |
-| `@cf/openai/gpt-oss-120b` | `blind_file_edit` | **PASS** | 8/8 | 8 | 0 | 6573 / 3454 | 444.64 | 58.25s |
-| `@cf/openai/gpt-oss-120b` | `stanza_scoped_tool` | **PASS** | 5/6 | 4 | 0 | 3612 / 519 | 150.31 | 6.99s |
-| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `blind_file_edit` | **PASS** | 8/8 | 7 | 0 | 6762 / 136 | 208.18 | 9.45s |
-| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `stanza_scoped_tool` | **PASS** | 4/6 | 3 | 0 | 2774 / 75 | 89.34 | 4.51s |
-| `@cf/qwen/qwen2.5-coder-32b-instruct` | `blind_file_edit` | **FAIL** (`fork failed`) | 8/8 | — | 0 | 6509 / 138 | 403.09 | 8.33s |
-| `@cf/qwen/qwen2.5-coder-32b-instruct` | `stanza_scoped_tool` | **FAIL** (`jumphost loop via server3`) | 6/6 | — | 1 | 4478 / 94 | 277.23 | 5.65s |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `check_client_precedence` (C99) | Static Preflight (100 runs) | **PASS** (100% accurate, 14 violations caught) | — | Deterministic | 0 | 0 / 0 | 0 | **2.441–2.448 ms** (median) |
+| `@cf/openai/gpt-oss-120b` | `blind_file_edit` | **FAIL** (`jumphost loop via server1`) | 8/8 | — | 0 | 9435 / 5745 | 691.91 | 113.89s |
+| `@cf/openai/gpt-oss-120b` | `stanza_scoped_tool` | **FAIL** (`stdio forwarding failed`) | 6/6 | — | 1 | 6099 / 2853 | 388.58 | 56.93s |
+| `@cf/google/gemma-4-26b-a4b-it` | `blind_file_edit` | **FAIL** (`jumphost loop via server3`) | 8/8 | — | 0 | 13172 / 203 | 120.05 | 9.68s |
+| `@cf/google/gemma-4-26b-a4b-it` | `stanza_scoped_tool` | **FAIL** (`jumphost loop via server3`) | 6/6 | — | 1 | 7763 / 131 | 74.15 | 33.36s |
+| `@cf/qwen/qwen2.5-coder-32b-instruct` | `blind_file_edit` | **FAIL** (`jumphost loop via server3`) | 8/8 | — | 2 | 10076 / 214 | 624.01 | 10.85s |
+| `@cf/qwen/qwen2.5-coder-32b-instruct` | `stanza_scoped_tool` | **FAIL** (`jumphost loop via server3`) | 6/6 | — | 3 | 6154 / 102 | 378.51 | 5.95s |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `blind_file_edit` | **FAIL** (`stdio forwarding failed`) | 8/8 | — | 0 | 8335 / 176 | 258.32 | 26.10s |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `stanza_scoped_tool` | **FAIL** (`Connection timed out`) | 6/6 | — | 2 | 5848 / 97 | 175.82 | 19.41s |
 
 ### Key Empirical Findings
-- **3 of 4 Cloudflare models solved both modes** (`gemma-4-26b-a4b-it`, `gpt-oss-120b`, and `llama-3.3-70b-instruct-fp8-fast`) once real OpenSSH error feedback (`jumphost loop via server3` / `server1`) was returned from live QEMU VMs.
-- **`@cf/qwen/qwen2.5-coder-32b-instruct` failed both modes**: in `stanza_scoped_tool`, it fell straight into **Stanza Locality Bias** (`set_proxy_jump` on `server2` -> `server1`, then `server3` -> `""` -> `server1`), leaving `Host *` untouched (`C99 exit 1`, `QEMU jumphost loop via server3`); in `blind_file_edit`, it swapped `ProxyJump` inside `Host *` to recursive `ProxyCommand ssh -W %h:%p server1/server3`, triggering `fork failed: Resource temporarily unavailable` in `wc-client` (which also bypassed C99 `ProxyJump`-only checking, highlighting why live QEMU execution complements static preflight checks).
-
+- **100% Failure Rate Across All 4 Models (8/8 Trials)**: When multi-layered OpenSSH wildcard patterns (`!server1 server*`, `*.compute.internal server?`, `*1 *2`) shadow `ProxyJump`, `Port`, and `User` simultaneously alongside a decoy `bastion-gateway` stanza and a local `Host server2` jump defect, **every model failed in both evaluation modes**.
+- **Distinct Failure Signatures in Live 4-VM QEMU**:
+  - `@cf/openai/gpt-oss-120b` unpeeled `Host *1 *2` and `Host !server1 server*` (`!server1 !server3 server*`), only to get trapped by `Host *.compute.internal server?` (`jumphost loop via server1`).
+  - `@cf/google/gemma-4-26b-a4b-it` and `@cf/meta/llama-3.3-70b-instruct-fp8-fast` routed `Host !server1 server*` through the decoy `bastion-gateway` (`stdio forwarding failed`), and in `stanza_scoped_tool` `llama-3.3-70b` set `ProxyJump none` on `!server1 server*`, locking a direct connection to isolated `server2:2222` (`Connection timed out`).
+  - `@cf/qwen/qwen2.5-coder-32b-instruct` exhibited pure **Stanza Locality Bias** across both modes (5 locality-biased edits on `Host server2` / `Host server3`), never touching the shadowing wildcard stanzas (`jumphost loop via server3`).
+- **Deterministic C99 Preflight (`check_client_precedence.c`)**: Caught all 14 shadowing and routing violations on `ssh_config.buggy` and every broken intermediate model config in **`2.448 ms` median latency** with **0 tokens** and **100% accuracy**.
 ---
 
 ## 6. Benchmark Evaluation & Tickets

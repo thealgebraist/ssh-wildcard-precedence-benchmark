@@ -67,9 +67,9 @@ fi
 echo ">> STEP 2 PASS: C99 preflight checker caught shadowing violation in <1ms."
 
 echo ""
-echo "[Step 3] Applying minimal reversible fix (removing ProxyJump server3 from Host *)..."
-sed -i.bak '/^Host \*/,/^Host /{ /^    ProxyJump server3$/d; }' "${CLIENT_CONFIG}"
-rm -f "${CLIENT_CONFIG}.bak"
+echo "[Step 3] Applying ground-truth fix (ssh_config.fixed)..."
+cp "${REPO_DIR}/ssh_config.fixed" "${CLIENT_CONFIG}"
+chmod 644 "${CLIENT_CONFIG}"
 echo "Updated ${CLIENT_CONFIG}:"
 cat "${CLIENT_CONFIG}"
 

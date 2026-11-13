@@ -12,29 +12,7 @@ CMD="${1:-status}"
 
 write_buggy_config() {
     mkdir -p "${CLIENT_SSH_DIR}"
-    cat << 'CFG' > "${CLIENT_SSH_DIR}/config"
-Host *
-    User deploy
-    IdentityFile /home/deploy/.ssh/id_ed25519
-    IdentitiesOnly yes
-    BatchMode yes
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ConnectTimeout 4
-    LogLevel ERROR
-    ProxyJump server3
-
-Host server1
-    HostName server1
-
-Host server3
-    HostName server3
-    ProxyJump server1
-
-Host server2
-    HostName server2
-    ProxyJump server3
-CFG
+    cp "${SCRIPT_DIR}/../ssh_config.buggy" "${CLIENT_SSH_DIR}/config"
     chmod 644 "${CLIENT_SSH_DIR}/config"
 }
 

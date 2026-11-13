@@ -41,44 +41,21 @@ DEFAULT_MODELS = [
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 ]
 
-INITIAL_BLIND_CONFIG = """\
-Host *
-    User deploy
-    IdentityFile /home/deploy/.ssh/id_ed25519
-    IdentitiesOnly yes
-    BatchMode yes
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ConnectTimeout 4
-    LogLevel ERROR
-    ProxyJump server3
-
-Host server1
-    HostName server1
-
-Host server3
-    HostName server3
-    ProxyJump server1
-
-Host server2
-    HostName server2
-    ProxyJump server3
-"""
+INITIAL_BLIND_CONFIG = (REPO_DIR / "ssh_config.buggy").read_text(encoding="utf-8")
 
 TASK_PROMPT_BLIND = """\
-Task: Fix the broken multi-hop SSH connection to server2.
+Task: Fix the broken SSH connection to `server2`.
 
 Environment:
-- This workspace controls a live 4-VM QEMU SSH chain: wc-client -> server1 -> server3 -> server2.
-- Running `test_connection` executes `ssh -o ConnectTimeout=6 server2 hostname` from `wc-client`.
+- Running `test_connection` executes `ssh -o ConnectTimeout=4 server2 hostname` from `wc-client` (`10.202.1.2/24`).
 - Currently `test_connection` fails with:
   "jumphost loop via server3"
 - The client SSH configuration file is located at `client/.ssh/config`.
 - You can reset `client/.ssh/config` back to the initial broken state with `reset_lab`.
 
 Instructions:
-1. Diagnose why `ssh server2 hostname` produces a jump host loop.
-2. Edit `client/.ssh/config` with the minimal reversible fix to restore multi-hop connectivity (`wc-client -> server1 -> server3 -> server2`).
+1. Diagnose all configuration defects in `client/.ssh/config` preventing SSH connectivity to `server2`.
+2. Edit `client/.ssh/config` with the minimal reversible fix to restore multi-hop connectivity.
 3. Verify that `test_connection` outputs `server2` with exit code 0, then call `done`.
 """
 
@@ -89,15 +66,13 @@ You must solve the task by emitting ONE JSON action object per turn (no surround
 Available JSON actions:
 1. {"action": "read_config"}
    Reads `client/.ssh/config` with line numbers.
-2. {"action": "edit_line", "old_text": "<exact substring>", "new_text": "<replacement>"}
-   Replaces the exact substring `old_text` in `client/.ssh/config` with `new_text`.
-3. {"action": "write_config", "content": "<full file contents>"}
-   Overwrites `client/.ssh/config` with `content`.
-4. {"action": "test_connection"}
-   Runs `./test_connection.sh` (`ssh -o ConnectTimeout=6 server2 hostname` on `wc-client`) and returns exit code and output.
-5. {"action": "reset_lab"}
+2. {"action": "edit_line", "old_text": "<unique exact substring>", "new_text": "<replacement>"}
+   Replaces the exact substring `old_text` in `client/.ssh/config` with `new_text`. `old_text` must match uniquely in the file (include the `Host ...` line if needed to disambiguate).
+3. {"action": "test_connection"}
+   Runs `./test_connection.sh` (`ssh -o ConnectTimeout=4 server2 hostname` on `wc-client`) and returns exit code and output.
+4. {"action": "reset_lab"}
    Restores `client/.ssh/config` to its initial broken state.
-6. {"action": "done", "diagnosis": "<root cause>", "summary": "<what was fixed and verified>"}
+5. {"action": "done", "diagnosis": "<root cause>", "summary": "<what was fixed and verified>"}
    Finishes the session after `test_connection` passes with exit code 0 and output `server2`.
 
 Rules:
@@ -113,10 +88,10 @@ You must emit ONE JSON action object per turn.
 Available JSON actions:
 1. {"action": "read_config"}
    Reads `client/.ssh/config` with line numbers.
-2. {"action": "set_proxy_jump", "host": "<host_pattern>", "proxy_jump": "<jump_host_or_empty>"}
-   Updates or inserts `ProxyJump <jump_host>` inside the matching `Host <host_pattern>` stanza in `client/.ssh/config` (preserving stanza ordering). Pass `""` or `null` for `proxy_jump` to delete the `ProxyJump` directive from that stanza.
+2. {"action": "set_proxy_jump", "host": "<host_pattern>", "proxy_jump": "<jump_host_or_none>"}
+   Updates or inserts `ProxyJump <jump_host_or_none>` inside the matching `Host <host_pattern>` stanza in `client/.ssh/config` (preserving stanza ordering; valid values are a hostname, comma-separated jump list, or `none`).
 3. {"action": "test_connection"}
-   Runs `./test_connection.sh` (`ssh -o ConnectTimeout=6 server2 hostname` on `wc-client`) and returns exit code and output.
+   Runs `./test_connection.sh` (`ssh -o ConnectTimeout=4 server2 hostname` on `wc-client`) and returns exit code and output.
 4. {"action": "done", "diagnosis": "<root cause>", "summary": "<what was fixed and verified>"}
    Finishes the session once `test_connection` passes with exit code 0 and output `server2`.
 
@@ -181,14 +156,16 @@ def call_cf_model(
     messages: List[Dict[str, str]],
     max_tokens: int = 2048,
     timeout_s: int = 120,
+    temperature: float = 0.0,
 ) -> Dict[str, Any]:
     """Runs one chat turn via `cf ai run <model> --body @<tmp.json> --quiet`."""
     payload: Dict[str, Any] = {
         "messages": messages,
-        "temperature": 0.0,
+        "temperature": temperature,
     }
     if "gemma-4" in model:
         payload["max_completion_tokens"] = max_tokens
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     else:
         payload["max_tokens"] = max_tokens
 
@@ -272,7 +249,7 @@ def extract_action_json(text: str, reasoning_fallback: str = "") -> Optional[Dic
             except json.JSONDecodeError:
                 pass
 
-        # Scan balanced JSON objects, prefer the last one with "action"
+        # Scan balanced JSON objects, prefer the first one with "action"
         found: List[Dict[str, Any]] = []
         idx = cleaned.find("{")
         while idx != -1:
@@ -286,7 +263,7 @@ def extract_action_json(text: str, reasoning_fallback: str = "") -> Optional[Dic
                 pass
             idx = cleaned.find("{", idx + 1)
         if found:
-            return found[-1]
+            return found[0]
     return None
 
 
@@ -515,7 +492,7 @@ def parse_stanzas(config_text: str) -> List[Dict[str, Any]]:
 
 
 def analyze_stanza_locality_bias(prev_config: str, new_config: str) -> Dict[str, Any]:
-    """Detects whether an edit modified `Host server2` without clearing shadowing in `Host *`."""
+    """Detects whether an edit modified a specific host stanza while earlier wildcard stanzas still shadow it."""
     prev_stanzas = parse_stanzas(prev_config)
     new_stanzas = parse_stanzas(new_config)
 
@@ -525,32 +502,45 @@ def analyze_stanza_locality_bias(prev_config: str, new_config: str) -> Dict[str,
                 return pos, [val for _, val in st["proxy_jumps"]]
         return None, []
 
-    old_star_pos, old_star_pj = find_pj(prev_stanzas, "*")
-    new_star_pos, new_star_pj = find_pj(new_stanzas, "*")
+    def wildcard_pj_summary(stanzas: List[Dict[str, Any]], before_pos: Optional[int]) -> List[str]:
+        out: List[str] = []
+        limit = before_pos if before_pos is not None else len(stanzas)
+        for pos, st in enumerate(stanzas[:limit]):
+            pat = st["host"]
+            if "*" in pat or "?" in pat or "!" in pat:
+                for _, val in st["proxy_jumps"]:
+                    out.append(f"{pat}:{val}")
+        return out
+
     old_s2_pos, old_s2_pj = find_pj(prev_stanzas, "server2")
     new_s2_pos, new_s2_pj = find_pj(new_stanzas, "server2")
+    old_s3_pos, old_s3_pj = find_pj(prev_stanzas, "server3")
+    new_s3_pos, new_s3_pj = find_pj(new_stanzas, "server3")
 
-    star_shadows_s2 = (
-        new_star_pos is not None
-        and new_s2_pos is not None
-        and new_star_pos < new_s2_pos
-        and len(new_star_pj) > 0
-    )
-    changed_s2 = old_s2_pj != new_s2_pj
-    changed_star = (old_star_pos != new_star_pos and old_star_pj == new_star_pj) or (old_star_pj != new_star_pj)
-    locality_biased_edit = bool(changed_s2 and star_shadows_s2 and (old_star_pj == new_star_pj))
+    old_wild_pj = wildcard_pj_summary(prev_stanzas, old_s2_pos)
+    new_wild_pj = wildcard_pj_summary(new_stanzas, new_s2_pos)
+
+    star_shadows_s2 = len(new_wild_pj) > 0
+    changed_specific = (old_s2_pj != new_s2_pj) or (old_s3_pj != new_s3_pj)
+    changed_wild = old_wild_pj != new_wild_pj
+    locality_biased_edit = bool(changed_specific and star_shadows_s2 and not changed_wild)
     return {
-        "changed_server2_proxyjump": changed_s2,
-        "changed_wildcard_or_order": changed_star,
+        "changed_server2_proxyjump": old_s2_pj != new_s2_pj,
+        "changed_wildcard_or_order": changed_wild,
         "wildcard_still_shadows_server2": star_shadows_s2,
         "locality_biased_edit": locality_biased_edit,
-        "wildcard_proxyjump": new_star_pj,
+        "wildcard_proxyjump": new_wild_pj,
         "server2_proxyjump": new_s2_pj,
     }
 
 
 def apply_set_proxy_jump(config_text: str, host_pattern: str, proxy_jump: Optional[str]) -> Tuple[str, str]:
     """Stanza-scoped ProxyJump editor mimicking Ansible `ssh_config` / Augeas."""
+    if proxy_jump is None or str(proxy_jump).strip() == "":
+        return (
+            config_text,
+            "ERROR: `proxy_jump` requires a valid OpenSSH ProxyJump target (hostname, comma-separated host list, or 'none').",
+        )
     lines = config_text.splitlines()
     in_target = False
     target_found = False
@@ -574,20 +564,17 @@ def apply_set_proxy_jump(config_text: str, host_pattern: str, proxy_jump: Option
     if not target_found:
         return config_text, f"ERROR: Stanza 'Host {host_pattern}' not found in client/.ssh/config."
 
-    delete_mode = proxy_jump is None or str(proxy_jump).strip() == ""
     new_block: List[str] = []
     pj_replaced = False
     for line in lines[target_start:target_end]:
         if re.match(r"^\s*ProxyJump\s+", line, flags=re.IGNORECASE):
-            if not delete_mode and not pj_replaced:
+            if not pj_replaced:
                 new_block.append(f"    ProxyJump {proxy_jump.strip()}")
                 pj_replaced = True
-            # Skip duplicate/deleted ProxyJump lines inside the stanza
         else:
             new_block.append(line)
 
-    if not delete_mode and not pj_replaced:
-        # Append before trailing blank lines inside stanza
+    if not pj_replaced:
         insert_at = len(new_block)
         while insert_at > 1 and new_block[insert_at - 1].strip() == "":
             insert_at -= 1
@@ -595,10 +582,7 @@ def apply_set_proxy_jump(config_text: str, host_pattern: str, proxy_jump: Option
 
     updated = lines[:target_start] + new_block + lines[target_end:]
     new_text = "\n".join(updated) + "\n"
-    if delete_mode:
-        msg = f"Removed ProxyJump directive from stanza 'Host {host_pattern}'."
-    else:
-        msg = f"Set 'ProxyJump {proxy_jump.strip()}' inside stanza 'Host {host_pattern}'."
+    msg = f"Set 'ProxyJump {proxy_jump.strip()}' inside stanza 'Host {host_pattern}'."
     return new_text, msg
 
 
@@ -635,16 +619,28 @@ def run_model_trial(
 
     for turn_idx in range(1, max_turns + 1):
         resp = call_cf_model(cf_bin, model, messages)
+        raw_content = resp["content"]
+        action_obj = extract_action_json(raw_content, resp["reasoning"])
+        if action_obj is None:
+            # Retry once with slight temperature bump if model returned empty/truncated content
+            retry_resp = call_cf_model(cf_bin, model, messages, temperature=0.2)
+            for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                resp["usage"][k] = int(resp["usage"].get(k) or 0) + int(retry_resp["usage"].get(k) or 0)
+            resp["usage"]["neurons"] = float(resp["usage"].get("neurons") or 0.0) + float(retry_resp["usage"].get("neurons") or 0.0)
+            resp["latency_ms"] = round(float(resp["latency_ms"]) + float(retry_resp["latency_ms"]), 2)
+            resp["content"] = retry_resp["content"]
+            resp["reasoning"] = retry_resp["reasoning"]
+            raw_content = resp["content"]
+            action_obj = extract_action_json(raw_content, resp["reasoning"])
+
         usage = resp["usage"]
         total_prompt_tokens += int(usage.get("prompt_tokens") or 0)
         total_completion_tokens += int(usage.get("completion_tokens") or 0)
         total_neurons += float(usage.get("neurons") or 0.0)
         total_model_latency_ms += float(resp["latency_ms"])
 
-        raw_content = resp["content"]
-        messages.append({"role": "assistant", "content": raw_content or resp["reasoning"]})
-
-        action_obj = extract_action_json(raw_content, resp["reasoning"])
+        assistant_history_text = raw_content.strip() if raw_content and raw_content.strip() else (json.dumps(action_obj) if action_obj else "{}")
+        messages.append({"role": "assistant", "content": assistant_history_text})
         turn_record: Dict[str, Any] = {
             "turn": turn_idx,
             "latency_ms": resp["latency_ms"],
@@ -675,8 +671,14 @@ def run_model_trial(
         elif act == "edit_line" and mode == "blind_file_edit":
             old_t = str(action_obj.get("old_text", ""))
             new_t = str(action_obj.get("new_text", ""))
-            if not old_t or old_t not in config_text:
+            matches = config_text.count(old_t) if old_t else 0
+            if not old_t or matches == 0:
                 tool_reply = "EDIT_ERROR: `old_text` was not found verbatim in client/.ssh/config. Call `read_config` to inspect exact lines."
+            elif matches > 1:
+                tool_reply = (
+                    f"EDIT_ERROR: `old_text` matches {matches} locations in client/.ssh/config. "
+                    "Include surrounding lines (such as the `Host ...` header) so `old_text` is unique."
+                )
             else:
                 new_cfg = config_text.replace(old_t, new_t, 1)
                 bias_info = analyze_stanza_locality_bias(config_text, new_cfg)
@@ -685,19 +687,6 @@ def run_model_trial(
                 config_text = new_cfg
                 preflight_res = run_c99_preflight(preflight_bin, config_text, "server2")
                 tool_reply = f"EDIT_OK: Updated client/.ssh/config ({len(config_text.splitlines())} lines). Run `test_connection` to verify."
-        elif act == "write_config" and mode == "blind_file_edit":
-            new_cfg = str(action_obj.get("content", ""))
-            if not new_cfg.strip():
-                tool_reply = "WRITE_ERROR: `content` must be non-empty."
-            else:
-                if not new_cfg.endswith("\n"):
-                    new_cfg += "\n"
-                bias_info = analyze_stanza_locality_bias(config_text, new_cfg)
-                if bias_info["locality_biased_edit"]:
-                    locality_bias_count += 1
-                config_text = new_cfg
-                preflight_res = run_c99_preflight(preflight_bin, config_text, "server2")
-                tool_reply = f"WRITE_OK: Wrote {len(config_text.splitlines())} lines to client/.ssh/config. Run `test_connection` to verify."
         elif act == "set_proxy_jump" and mode == "stanza_scoped_tool":
             host_pat = str(action_obj.get("host", "")).strip()
             pj_val = action_obj.get("proxy_jump")
@@ -810,10 +799,12 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
     lines.append("| Fixture | Iterations | Expected Exit | 100% Accurate | Min (ms) | Median (ms) | p95 (ms) | Output |")
     lines.append("| :--- | ---: | ---: | :--- | ---: | ---: | ---: | :--- |")
     for label, stats in c99.items():
+        out_lines = [ln.strip() for ln in stats["output"].splitlines() if ln.strip()]
+        summary_out = out_lines[0] + (f" (+{len(out_lines) - 1} more violations)" if len(out_lines) > 1 else "") if out_lines else ""
         lines.append(
             f"| `{label}` | {stats['iterations']} | `{stats['expected_exit_code']}` | "
             f"{'Yes' if stats['accuracy_100pct'] else 'No'} | {stats['min_ms']:.3f} | "
-            f"{stats['median_ms']:.3f} | {stats['p95_ms']:.3f} | `{stats['output']}` |"
+            f"{stats['median_ms']:.3f} | {stats['p95_ms']:.3f} | `{summary_out}` |"
         )
     lines.append("")
 
@@ -836,12 +827,15 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
     lines.append("")
     for r in report["trials"]:
         status = "PASS" if r["passed"] else "FAIL"
+        fq_out = " / ".join(ln.strip() for ln in r["final_qemu"]["output"].splitlines() if ln.strip())[:160]
+        fp_lines = [ln.strip() for ln in r["final_c99_preflight_server2"]["output"].splitlines() if ln.strip()]
+        fp_out = fp_lines[0] + (f" (+{len(fp_lines) - 1} more)" if len(fp_lines) > 1 else "") if fp_lines else ""
         lines.append(f"### `{r['model']}` — `{r['mode']}` ({status})")
         lines.append("")
         lines.append(f"- **Identified Precedence Root Cause (`Host *` / first-match)**: `{r['identified_precedence_root_cause']}`")
         lines.append(f"- **Stanza Locality Bias Observed**: `{r['stanza_locality_bias_observed']}` ({r['locality_biased_edits']} biased edits)")
-        lines.append(f"- **Final QEMU Check**: exit `{r['final_qemu']['exit_code']}` -> `{r['final_qemu']['output']}`")
-        lines.append(f"- **Final C99 Preflight (`server2`)**: exit `{r['final_c99_preflight_server2']['exit_code']}` -> `{r['final_c99_preflight_server2']['output']}`")
+        lines.append(f"- **Final QEMU Check**: exit `{r['final_qemu']['exit_code']}` -> `{fq_out}`")
+        lines.append(f"- **Final C99 Preflight (`server2`)**: exit `{r['final_c99_preflight_server2']['exit_code']}` -> `{fp_out}`")
         lines.append("")
         for t in r["turns"]:
             act_json = json.dumps(t["action"]) if t.get("action") else "INVALID_JSON"
@@ -850,10 +844,12 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
                 extra.append("LOCALITY_BIASED_EDIT")
             if "qemu_check" in t:
                 qc = t["qemu_check"]
-                extra.append(f"QEMU(rc={qc['exit_code']}, {qc['output'][:60]})")
+                qc_one = " / ".join(ln.strip() for ln in qc["output"].splitlines() if ln.strip())[:70]
+                extra.append(f"QEMU(rc={qc['exit_code']}, {qc_one})")
             if "c99_preflight_shadow" in t:
                 cp = t["c99_preflight_shadow"]
-                extra.append(f"C99(rc={cp['exit_code']})")
+                cp_cnt = len([ln for ln in cp["output"].splitlines() if "PREFLIGHT VIOLATION" in ln])
+                extra.append(f"C99(rc={cp['exit_code']}, violations={cp_cnt})")
             extra_str = f" — {' | '.join(extra)}" if extra else ""
             lines.append(f"- **Turn {t['turn']}** ({t['latency_ms']:.0f}ms): `{act_json}`{extra_str}")
         lines.append("")

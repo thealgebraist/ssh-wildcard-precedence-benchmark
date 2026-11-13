@@ -1,24 +1,58 @@
-# Buggy client configuration exhibiting Instance 12:
-# OpenSSH parses first-match-wins.
-# Placing ProxyJump server3 under 'Host *' at the top shadows and overrides
-# any subsequent host-specific ProxyJump directives (e.g. Host server2).
+# =====================================================================
+# Enterprise Bastion Mesh Client Configuration
+# Environment: Production Multi-Hop Bastion Fabric (us-east-compute)
+# Managed by: Platform Infrastructure Automation (Ansible ssh_config)
+# Relay Topology: wc-client (10.202.1.0/24) -> bastion -> internal
+# Last Modified: 2026-11-13
+# =====================================================================
 
 Host *
-    ProxyJump server3
+    IdentityFile /home/deploy/.ssh/id_ed25519
+    IdentitiesOnly yes
+    BatchMode yes
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
+    ConnectTimeout 4
+    LogLevel ERROR
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
+
+Host bastion-gateway
+    HostName 10.202.1.3
     User deploy
+    Port 22
+
+Host !server1 server*
+    ProxyJump server3
+    ControlMaster no
+
+Host *.compute.internal server?
+    ProxyJump server1:2222
+    User root
+    ForwardAgent no
+
+Host *1 *2
+    ProxyJump server2:2222
+    Port 2222
+    Compression no
+
+# =====================================================================
+# Per-Host Node Definitions
+# =====================================================================
 
 Host server1
-    HostName 10.0.0.1
+    HostName server1
+    User deploy
     Port 22
 
 Host server3
-    HostName 10.0.0.3
+    HostName server3
+    User deploy
     Port 22
     ProxyJump server1
 
 Host server2
-    HostName 10.0.0.2
+    HostName server2
+    User deploy
     Port 22
     ProxyJump server1

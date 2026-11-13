@@ -33,7 +33,7 @@ Verified on `159.195.249.30` (`agent1`, QEMU TCG, 4 VMs `wc-client -> server1 ->
 ./qemu/qemu_cluster.sh down
 ```
 
-## Empirical Cloudflare Workers AI Result (`@cf/google/gemma-4-26b-a4b-it`, 2026-11-13)
+## Empirical Cloudflare Workers AI Result (`@cf/google/gemma-4-26b-a4b-it`, Hardened 5-Layer Instance 12, 2026-11-13)
 Tested via [`eval_cloudflare_models.py`](../eval_cloudflare_models.py) against live 4-VM QEMU (`159.195.249.30:/tmp/ssh-wildcard-blind`) and C99 preflight (see [`results/CLOUDFLARE_BENCHMARK_RESULTS.md`](../results/CLOUDFLARE_BENCHMARK_RESULTS.md)):
-- **`blind_file_edit`**: **PASS** (`4/8` turns, solved at turn `3`, `0` locality-biased edits, `2997` in / `2726` out tokens, `101.59` neurons, `61.03s`). Immediately read config (Turn 1), removed `ProxyJump server3` from `Host *` (Turn 2), and verified live 4-VM QEMU `server2` (`exit 0`, C99 `rc=0`) on Turn 3.
-- **`stanza_scoped_tool`**: **PASS** (`4/6` turns, solved at turn `3`, `0` locality-biased edits, `3024` in / `2495` out tokens, `95.54` neurons, `44.72s`). Read config (Turn 1), called `set_proxy_jump(host="*", proxy_jump="")` (Turn 2), and verified live 4-VM QEMU `server2` (`exit 0`, C99 `rc=0`) on Turn 3.
+- **`blind_file_edit`**: **FAIL** (`8/8` turns, `0` locality-biased edits, `13172` in / `203` out tokens, `120.05` neurons, `9.68s`). Changed `Host !server1 server*` to `ProxyJump bastion-gateway` (Turn 3 -> `stdio forwarding failed`), modified `Host *1 *2` to `ProxyJump server1` and `Port 22` (Turn 6 -> `stdio forwarding failed`), and called `reset_lab` on Turn 8 (`jumphost loop via server3`, C99 `rc=1`, 14 violations).
+- **`stanza_scoped_tool`**: **FAIL** (`6/6` turns, `1` locality-biased edit, `7763` in / `131` out tokens, `74.15` neurons, `33.36s`). Exhibited Stanza Locality Bias on Turn 4 (`set_proxy_jump(host="server2", proxy_jump="bastion-gateway")`) while `Host !server1 server*` (`ProxyJump server3`) shadowed `server2`, failing with `jumphost loop via server3` (C99 `rc=1`, 14 violations).

@@ -68,8 +68,8 @@ run_full_retest() {
 
     echo ""
     echo "[Step C] Applying minimal ground-truth fix in ${ws_dir}/client/.ssh/config..."
-    sed -i.bak '/^Host \*/,/^Host /{ /^    ProxyJump server3$/d; }' "${ws_dir}/client/.ssh/config"
-    rm -f "${ws_dir}/client/.ssh/config.bak"
+    cp "${REPO_DIR}/ssh_config.fixed" "${ws_dir}/client/.ssh/config"
+    chmod 600 "${ws_dir}/client/.ssh/config"
 
     echo "[Step D] Verifying C99 Preflight Checker passes..."
     "${PREFLIGHT_BIN}" "${ws_dir}/client/.ssh/config" server2 ProxyJump

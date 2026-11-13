@@ -9,29 +9,7 @@ CMD="${1:-/tmp/ssh-wildcard-blind}"
 write_faulty_config() {
     local dst="$1"
     mkdir -p "$(dirname "${dst}")"
-    cat << 'CFG' > "${dst}"
-Host *
-    User deploy
-    IdentityFile /home/deploy/.ssh/id_ed25519
-    IdentitiesOnly yes
-    BatchMode yes
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ConnectTimeout 4
-    LogLevel ERROR
-    ProxyJump server3
-
-Host server1
-    HostName server1
-
-Host server3
-    HostName server3
-    ProxyJump server1
-
-Host server2
-    HostName server2
-    ProxyJump server3
-CFG
+    cp "${REPO_DIR}/ssh_config.buggy" "${dst}"
     chmod 600 "${dst}"
 }
 
@@ -76,19 +54,18 @@ chmod 700 "${WS_DIR}/client/.ssh"
 write_faulty_config "${WS_DIR}/client/.ssh/config"
 
 cat << 'EOF' > "${WS_DIR}/PROMPT.txt"
-Task: Fix the broken multi-hop SSH connection to server2.
+Task: Fix the broken SSH connection to `server2`.
 
 Environment:
-- This workspace controls a live 4-VM QEMU SSH chain: wc-client -> server1 -> server3 -> server2.
-- Running `./test_connection.sh` runs `ssh -o ConnectTimeout=6 server2 hostname` from `wc-client`.
+- Running `./test_connection.sh` executes `ssh -o ConnectTimeout=4 server2 hostname` from `wc-client` (`10.202.1.2/24`).
 - Currently `./test_connection.sh` fails with:
   "jumphost loop via server3"
 - The client SSH configuration file is located at `client/.ssh/config` in this directory (synced into `wc-client:/home/deploy/.ssh/config` each time `./test_connection.sh` runs).
 - You can reset `client/.ssh/config` back to the initial broken state with `./reset_lab.sh`.
 
 Instructions:
-1. Diagnose why `ssh server2 hostname` produces a jump host loop.
-2. Edit `client/.ssh/config` with the minimal reversible fix to restore multi-hop connectivity (`wc-client -> server1 -> server3 -> server2`).
+1. Diagnose all configuration defects in `client/.ssh/config` preventing SSH connectivity to `server2`.
+2. Edit `client/.ssh/config` with the minimal reversible fix to restore multi-hop connectivity.
 3. Verify that `./test_connection.sh` outputs `server2` with exit code 0.
 EOF
 
@@ -108,8 +85,15 @@ cat << 'EOF' > "${WS_DIR}/reset_lab.sh"
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cat << 'CFG' > "${SCRIPT_DIR}/client/.ssh/config"
+# =====================================================================
+# Enterprise Bastion Mesh Client Configuration
+# Environment: Production Multi-Hop Bastion Fabric (us-east-compute)
+# Managed by: Platform Infrastructure Automation (Ansible ssh_config)
+# Relay Topology: wc-client (10.202.1.0/24) -> bastion -> internal
+# Last Modified: 2026-11-13
+# =====================================================================
+
 Host *
-    User deploy
     IdentityFile /home/deploy/.ssh/id_ed25519
     IdentitiesOnly yes
     BatchMode yes
@@ -117,18 +101,48 @@ Host *
     UserKnownHostsFile /dev/null
     ConnectTimeout 4
     LogLevel ERROR
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
+
+Host bastion-gateway
+    HostName 10.202.1.3
+    User deploy
+    Port 22
+
+Host !server1 server*
     ProxyJump server3
+    ControlMaster no
+
+Host *.compute.internal server?
+    ProxyJump server1:2222
+    User root
+    ForwardAgent no
+
+Host *1 *2
+    ProxyJump server2:2222
+    Port 2222
+    Compression no
+
+# =====================================================================
+# Per-Host Node Definitions
+# =====================================================================
 
 Host server1
     HostName server1
+    User deploy
+    Port 22
 
 Host server3
     HostName server3
+    User deploy
+    Port 22
     ProxyJump server1
 
 Host server2
     HostName server2
-    ProxyJump server3
+    User deploy
+    Port 22
+    ProxyJump server1
 CFG
 chmod 600 "${SCRIPT_DIR}/client/.ssh/config"
 echo "[reset_lab] Restored client/.ssh/config to initial broken state."
